@@ -1,0 +1,1 @@
+model git_commit works
