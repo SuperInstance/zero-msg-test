@@ -4,13 +4,10 @@
 <!-- The agent checks these off as it completes them. -->
 
 ## Open
-<!-- Add tasks here -->
+- Investigate why GitHub API calls for listing and commenting on issues are failing
 
 ## In Progress
 <!-- The agent moves tasks here when it starts them -->
 
 ## Done
 <!-- The agent moves tasks here when it finishes them -->
-
----
-*The agent checks this file every wake cycle. GitHub Issues also work — the agent watches both.*
