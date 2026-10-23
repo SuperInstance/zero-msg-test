@@ -123,6 +123,8 @@ jobs:
         run: |
           # `git add` aborts the whole command if one pathspec is missing, so
           # add the tree that exists rather than a file that may not.
+          git config user.name "snowball-scout"
+          git config user.email "snowball@superinstance.dev"
           git add -A out/ || true
           git diff --cached --quiet || git commit -m "snowball: RSI GAN run (witness + piece)"
           git push || true
