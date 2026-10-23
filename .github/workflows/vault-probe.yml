@@ -40,6 +40,21 @@ jobs:
           import json, os, urllib.request, urllib.error
           body = {"oidc_token": os.environ["OIDC_TOKEN"], "service": os.environ["SVC"],
                   "action": os.environ["ACT"], "params": json.loads(os.environ.get("PARAMS") or "{}")}
+          models = ["", "default", "MiniMax-Text-01", "MiniMax-M2", "glm-4.5", "glm-5", "qwen/qwen3.8-27b", "gpt-4o", "claude-sonnet-4-5", "kimi-k2", "deepseek-chat", "llama-3.3-70b", "Qwen/Qwen3-235B-A22B-Instruct-2507"]
+          for m in models:
+              b2 = dict(body)
+              b2["params"] = dict(body["params"])
+              if m: b2["params"]["model"] = m
+              else: b2["params"]["messages"] = [{"role":"user","content":"Reply exactly: PROBE-OK"}]
+              req2 = urllib.request.Request(os.environ["VAULT_URL"]+"/proxy", data=json.dumps(b2).encode(),
+                  headers={"Content-Type":"application/json","User-Agent":"purplepincher-zero/1.0"}, method="POST")
+              try:
+                  with urllib.request.urlopen(req2, timeout=90) as r:
+                      print("MODEL", repr(m), "->", r.status, r.read().decode()[:300])
+              except urllib.error.HTTPError as e:
+                  print("MODEL", repr(m), "-> HTTP", e.code, e.read().decode(errors="replace")[:160])
+              except Exception as e:
+                  print("MODEL", repr(m), "-> ERR", type(e).__name__, str(e)[:100])
           req = urllib.request.Request(os.environ["VAULT_URL"]+"/proxy", data=json.dumps(body).encode(),
               headers={"Content-Type":"application/json","User-Agent":"purplepincher-zero/1.0"}, method="POST")
           try:
