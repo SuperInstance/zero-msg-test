@@ -1,0 +1,99 @@
+# llm-proxy.yml — vault-backed LLM completion for fleet bots.
+#
+# Mints a GitHub OIDC token, calls the SuperInstance vault's /proxy (service=llm,
+# action=complete), and writes the completion to a file that the caller can fetch
+# via the Actions artifact / commit. The LLM key never leaves the vault.
+#
+# Dispatch with inputs: prompt (required), out (path inside scratch/), model (optional).
+
+name: llm-proxy
+
+on:
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: 'Prompt to send to the LLM'
+        required: true
+      out:
+        description: 'Output filename under scratch/'
+        required: false
+        default: 'llm-out.txt'
+      model:
+        description: 'Model name (empty = vault default)'
+        required: false
+        default: ''
+
+permissions:
+  id-token: write
+  contents: write
+
+jobs:
+  complete:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Get OIDC token for vault
+        run: |
+          OIDC_TOKEN=$(curl -s \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=vault" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin).get('value',''))")
+          echo "OIDC_TOKEN=${OIDC_TOKEN}" >> $GITHUB_ENV
+
+      - name: Call vault LLM
+        env:
+          OIDC_TOKEN: ${{ env.OIDC_TOKEN }}
+          VAULT_URL: https://superinstance-vault.casey-digennaro.workers.dev
+          PROMPT: ${{ inputs.prompt }}
+          MODEL: ${{ inputs.model }}
+          OUTFILE: ${{ inputs.out }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > /tmp/llm_result.json
+          import json, os, urllib.request
+          body = {
+            "oidc_token": os.environ["OIDC_TOKEN"],
+            "service": "llm",
+            "action": "complete",
+            "params": {"messages": [{"role": "user", "content": os.environ["PROMPT"]}]},
+          }
+          if os.environ.get("MODEL"):
+              body["params"]["model"] = os.environ["MODEL"]
+          req = urllib.request.Request(
+              os.environ["VAULT_URL"] + "/proxy",
+              data=json.dumps(body).encode(),
+              headers={"Content-Type": "application/json",
+                       "User-Agent": "purplepincher-zero/1.0 (+https://github.com/purplepincher/zero)"},
+              method="POST")
+          with urllib.request.urlopen(req, timeout=120) as r:
+              print(r.read().decode())
+          PY
+          echo "--- raw vault response ---"
+          head -c 4000 /tmp/llm_result.json
+          echo ""
+          python3 - <<'PY'
+          import json, os, pathlib
+          raw = json.load(open("/tmp/llm_result.json"))
+          if "error" in raw and not raw.get("result"):
+              raise SystemExit("VAULT ERROR: " + str(raw["error"]))
+          r = raw.get("result", raw)
+          if isinstance(r, dict):
+              text = r.get("content") or r.get("text") or json.dumps(r)
+          else:
+              text = str(r)
+          out = pathlib.Path("scratch") / os.environ["OUTFILE"]
+          out.parent.mkdir(parents=True, exist_ok=True)
+          out.write_text(text)
+          print("wrote", out, len(text), "chars")
+          PY
+          cat "scratch/${OUTFILE}" || true
+
+      - name: Commit result
+        run: |
+          git config user.name "vault-llm"
+          git config user.email "vault-llm@users.noreply.github.com"
+          git add -A scratch/ || true
+          git diff --cached --quiet || git commit -m "llm-proxy: completion for ${{ inputs.out }}"
+          git push || true
