@@ -1,11 +1,3 @@
-# llm-proxy.yml — vault-backed LLM completion for fleet bots.
-#
-# Mints a GitHub OIDC token, calls the SuperInstance vault's /proxy (service=llm,
-# action=complete), and writes the completion to a file that the caller can fetch
-# via the Actions artifact / commit. The LLM key never leaves the vault.
-#
-# Dispatch with inputs: prompt (required), out (path inside scratch/), model (optional).
-
 name: llm-proxy
 
 on:
@@ -33,7 +25,6 @@ jobs:
     steps:
       - name: Check out
         uses: actions/checkout@v4
-
       - name: Get OIDC token for vault
         run: |
           OIDC_TOKEN=$(curl -s \
@@ -41,7 +32,6 @@ jobs:
             "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=vault" \
             | python3 -c "import sys,json; print(json.load(sys.stdin).get('value',''))")
           echo "OIDC_TOKEN=${OIDC_TOKEN}" >> $GITHUB_ENV
-
       - name: Call vault LLM
         env:
           OIDC_TOKEN: ${{ env.OIDC_TOKEN }}
@@ -67,17 +57,21 @@ jobs:
               headers={"Content-Type": "application/json",
                        "User-Agent": "purplepincher-zero/1.0 (+https://github.com/purplepincher/zero)"},
               method="POST")
-          with urllib.request.urlopen(req, timeout=120) as r:
+          with urllib.request.urlopen(req, timeout=180) as r:
               print(r.read().decode())
           PY
           echo "--- raw vault response ---"
-          head -c 4000 /tmp/llm_result.json
+          head -c 8000 /tmp/llm_result.json
           echo ""
           python3 - <<'PY'
           import json, os, pathlib
           raw = json.load(open("/tmp/llm_result.json"))
-          if "error" in raw and not raw.get("result"):
-              raise SystemExit("VAULT ERROR: " + str(raw["error"]))
+          if isinstance(raw, dict) and raw.get("error") and not raw.get("result"):
+              pathlib.Path("scratch").mkdir(parents=True, exist_ok=True)
+              pathlib.Path("scratch")/os.environ["OUTFILE"]
+              (pathlib.Path("scratch")/os.environ["OUTFILE"]).write_text("")
+              print("VAULT ERROR: " + str(raw["error"]))
+              raise SystemExit(1)
           r = raw.get("result", raw)
           if isinstance(r, dict):
               text = r.get("content") or r.get("text") or json.dumps(r)
@@ -88,8 +82,6 @@ jobs:
           out.write_text(text)
           print("wrote", out, len(text), "chars")
           PY
-          cat "scratch/${OUTFILE}" || true
-
       - name: Commit result
         run: |
           git config user.name "vault-llm"
