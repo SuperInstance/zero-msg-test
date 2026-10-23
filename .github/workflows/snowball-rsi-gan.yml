@@ -112,51 +112,12 @@ jobs:
           echo "--- produced ---"
           ls -la out/prose/snowball-inspired/ 2>&1 | tail -8
 
-      - name: Publish piece to AI-Writings
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TARGET_REPO: ${{ inputs.target_repo }}
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import json, os, pathlib, urllib.request, base64
-          repo = os.environ["TARGET_REPO"]
-          tok = os.environ["GH_TOKEN"]
-          d = pathlib.Path("out/prose/snowball-inspired")
-          files = sorted(d.glob("*.md"))
-          if not files:
-              raise SystemExit("no piece was produced")
-          f = files[-1]
-          body = f.read_text()
-          print("publishing", f.name, len(body), "chars to", repo)
-          path = "prose/snowball-inspired/" + f.name
-          # Get current ref (find the file's existing sha, if any)
-          req = urllib.request.Request(
-              f"https://api.github.com/repos/{repo}/contents/{path}",
-              headers={"Authorization": "Bearer " + tok, "Accept": "application/vnd.github+json"})
-          sha = None
-          try:
-              with urllib.request.urlopen(req, timeout=60) as r:
-                  sha = json.load(r)["sha"]
-          except urllib.error.HTTPError as e:
-              if e.code != 404: raise
-          payload = {"message": "snowball: RSI GAN inspired piece (vault providers)",
-                     "content": base64.b64encode(body.encode()).decode(),
-                     "branch": "main"}
-          if sha: payload["sha"] = sha
-          req = urllib.request.Request(
-              f"https://api.github.com/repos/{repo}/contents/{path}",
-              data=json.dumps(payload).encode(),
-              headers={"Authorization": "Bearer " + tok,
-                       "Accept": "application/vnd.github+json",
-                       "Content-Type": "application/json"},
-              method="PUT")
-          with urllib.request.urlopen(req, timeout=90) as r:
-              res = json.load(r)
-          print("committed:", res["commit"]["html_url"])
-          pathlib.Path("published_path.txt").write_text(path)
-          PY
-          echo "PUBLISHED: $(cat published_path.txt)"
+      - name: Upload the piece as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: snowball-inspired-piece
+          path: out/prose/snowball-inspired/
+          if-no-files-found: error
 
       - name: Record the witness locally
         run: |
