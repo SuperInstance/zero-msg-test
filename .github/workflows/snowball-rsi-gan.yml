@@ -1,0 +1,165 @@
+# snowball-rsi-gan.yml — RSI GAN inspired-prose run with vault-backed providers.
+#
+# snowball_writer.py --once --competition fans out to three LLMs in parallel and
+# picks the winner by the script's own heuristic (length + substrate-vocab density).
+# Its provider calls need ZAI_TOKEN / GROQ_TOKEN / DEEPINFRA_TOKEN, which live on
+# the fleet host (providers.py: "Keys come from env only") and are absent from a
+# cold checkout, so the competition can never fill a winner.
+#
+# This workflow supplies the three generations through the fleet's SuperInstance
+# vault (GitHub OIDC -> vault /proxy -> MiniMax), which exposes three live
+# models -- so the three-way parallel competition is preserved rather than
+# collapsed to one. The writer's own prompt, seed picking, scoring, file naming,
+# witness log and substrate-bus publication are untouched.
+#
+# It runs here, in the vault-registered repo, and publishes the finished piece
+# into SuperInstance/AI-Writings prose/snowball-inspired/ via the GitHub API.
+
+name: snowball-rsi-gan
+
+on:
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: 'Optional seed override (default: writer picks from canon)'
+        required: false
+        default: ''
+      target_repo:
+        description: 'Repo to publish the piece into (owner/name)'
+        required: false
+        default: 'SuperInstance/AI-Writings'
+
+permissions:
+  id-token: write
+  contents: write
+
+jobs:
+  write:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Get OIDC token for vault
+        run: |
+          OIDC_TOKEN=$(curl -s \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=vault" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin).get('value',''))")
+          echo "OIDC_TOKEN=${OIDC_TOKEN}" >> $GITHUB_ENV
+
+      - name: Fetch canon + writer from AI-Writings
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_REPO: ${{ inputs.target_repo }}
+        run: |
+          set -euo pipefail
+          mkdir -p canon bots/snowball-scout bots/substrate-bus
+          # The canon is what the writer reads for inspiration seeds; take the
+          # prose tree so pick_seed() sees the same material it would locally.
+          curl -sL "https://api.github.com/repos/${TARGET_REPO}/tarball/main" -o /tmp/aiw.tar.gz
+          mkdir -p /tmp/aiw && tar -xzf /tmp/aiw.tar.gz -C /tmp/aiw
+          SRC=$(find /tmp/aiw -maxdepth 1 -mindepth 1 -type d | head -1)
+          cp -r "$SRC/prose" canon/prose 2>/dev/null || true
+          cp "$SRC/bots/snowball-scout/snowball_writer.py" bots/snowball-scout/ || true
+          cp "$SRC/bots/substrate-bus/substrate_bus.py" bots/substrate-bus/ || true
+          cp "$SRC/bots/substrate-bus/topics.json" bots/substrate-bus/ || true
+          cp "$SRC/bots/substrate-bus/substrate-witness.jsonl" bots/substrate-bus/ || true
+          echo "canon pieces: $(ls canon/prose/*.md 2>/dev/null | wc -l)"
+          ls -la bots/snowball-scout/ bots/substrate-bus/
+
+      - name: Run snowball writer (RSI GAN competition)
+        env:
+          OIDC_TOKEN: ${{ env.OIDC_TOKEN }}
+          VAULT_URL: https://superinstance-vault.casey-digennaro.workers.dev
+          SEED_OVERRIDE: ${{ inputs.seed }}
+        run: |
+          set -uo pipefail
+          python3 - <<'PY'
+          import os, sys, pathlib, importlib.util
+          ROOT = pathlib.Path.cwd()
+          sys.path.insert(0, str(ROOT/"bots/snowball-scout"))
+          sys.path.insert(0, str(ROOT/"bots/substrate-bus"))
+          import snowball_writer as sw
+
+          # The writer hardcodes /workspace/repos/ai-writings (its fleet-host
+          # path). Repoint its module-level path constants at this checkout.
+          sw.CANON_DIR = ROOT / "canon/prose"
+          sw.WITNESS_PATH = ROOT / "out/bots/snowball-scout/witness.log"
+          sw.BOOKKEEPER_PATH = ROOT / "out/bots/snowball-scout/bookkeeper.wal"
+          sw.INSPIRED_DIR = ROOT / "out/prose/snowball-inspired"
+
+          # Route the three providers through the vault.
+          spec = importlib.util.spec_from_file_location(
+              "vault_provider_shim", ROOT/"bots/snowball-scout/vault_provider_shim.py")
+          shim = importlib.util.module_from_spec(spec); spec.loader.exec_module(shim)
+          sw.call_zai = shim.call_zai
+          sw.call_groq = shim.call_groq
+          sw.call_deepinfra = shim.call_deepinfra
+
+          if os.environ.get("SEED_OVERRIDE"):
+              sw.pick_seed = lambda: os.environ["SEED_OVERRIDE"]
+
+          sw.run_once(competition=True)
+          PY
+          echo "--- produced ---"
+          ls -la out/prose/snowball-inspired/ 2>&1 | tail -8
+
+      - name: Publish piece to AI-Writings
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_REPO: ${{ inputs.target_repo }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib, urllib.request, base64
+          repo = os.environ["TARGET_REPO"]
+          tok = os.environ["GH_TOKEN"]
+          d = pathlib.Path("out/prose/snowball-inspired")
+          files = sorted(d.glob("*.md"))
+          if not files:
+              raise SystemExit("no piece was produced")
+          f = files[-1]
+          body = f.read_text()
+          print("publishing", f.name, len(body), "chars to", repo)
+          path = "prose/snowball-inspired/" + f.name
+          # Get current ref (find the file's existing sha, if any)
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/contents/{path}",
+              headers={"Authorization": "Bearer " + tok, "Accept": "application/vnd.github+json"})
+          sha = None
+          try:
+              with urllib.request.urlopen(req, timeout=60) as r:
+                  sha = json.load(r)["sha"]
+          except urllib.error.HTTPError as e:
+              if e.code != 404: raise
+          payload = {"message": "snowball: RSI GAN inspired piece (vault providers)",
+                     "content": base64.b64encode(body.encode()).decode(),
+                     "branch": "main"}
+          if sha: payload["sha"] = sha
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/contents/{path}",
+              data=json.dumps(payload).encode(),
+              headers={"Authorization": "Bearer " + tok,
+                       "Accept": "application/vnd.github+json",
+                       "Content-Type": "application/json"},
+              method="PUT")
+          with urllib.request.urlopen(req, timeout=90) as r:
+              res = json.load(r)
+          print("committed:", res["commit"]["html_url"])
+          pathlib.Path("published_path.txt").write_text(path)
+          PY
+          echo "PUBLISHED: $(cat published_path.txt)"
+
+      - name: Record the witness locally
+        run: |
+          git add -A out/ published_path.txt || true
+          git diff --cached --quiet || git commit -m "snowball: RSI GAN run (witness + piece)"
+          git push || true
