@@ -121,6 +121,8 @@ jobs:
 
       - name: Record the witness locally
         run: |
-          git add -A out/ published_path.txt || true
+          # `git add` aborts the whole command if one pathspec is missing, so
+          # add the tree that exists rather than a file that may not.
+          git add -A out/ || true
           git diff --cached --quiet || git commit -m "snowball: RSI GAN run (witness + piece)"
           git push || true
