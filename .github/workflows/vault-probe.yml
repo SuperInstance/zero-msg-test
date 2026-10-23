@@ -40,12 +40,12 @@ jobs:
           import json, os, urllib.request, urllib.error
           body = {"oidc_token": os.environ["OIDC_TOKEN"], "service": os.environ["SVC"],
                   "action": os.environ["ACT"], "params": json.loads(os.environ.get("PARAMS") or "{}")}
-          models = ["", "default", "MiniMax-Text-01", "MiniMax-M2", "glm-4.5", "glm-5", "qwen/qwen3.8-27b", "gpt-4o", "claude-sonnet-4-5", "kimi-k2", "deepseek-chat", "llama-3.3-70b", "Qwen/Qwen3-235B-A22B-Instruct-2507"]
+          models = ["MiniMax-Text-01","MiniMax-M1","MiniMax-M1-80k","MiniMax-Text-01-live","MiniMax-VL-01","MiniMax-abab6.5","MiniMax-M2.1","MiniMax-M2.5","abab6.5s","abab6.5g","abab6.5s-chat","abab6.5g-chat","MiniMax-Text-01-128k","MiniMax-Text-01-32k","MiniMax-M2-highspeed","minimax-text-01"]
           for m in models:
               b2 = dict(body)
               b2["params"] = dict(body["params"])
-              if m: b2["params"]["model"] = m
-              else: b2["params"]["messages"] = [{"role":"user","content":"Reply exactly: PROBE-OK"}]
+              b2["params"]["model"] = m
+              b2["params"]["messages"] = [{"role":"user","content":"Reply exactly: PROBE-OK"}]
               req2 = urllib.request.Request(os.environ["VAULT_URL"]+"/proxy", data=json.dumps(b2).encode(),
                   headers={"Content-Type":"application/json","User-Agent":"purplepincher-zero/1.0"}, method="POST")
               try:
