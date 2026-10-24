@@ -1,0 +1,57 @@
+<think>We need craft 400-600 words, only ADR content. Need infer specifics. Temporal validity lifecycle cells valid grace expired. Cellular-first concepts witness/bookkeeper/ternary/JEPA/JEV/fleet-clock/conservation. Need specific grounded, not invent too much? Define decision likely validity timestamps, grace, witness events, bookkeeper state, ternary classification, JEPA/JEV maybe predictive/event? Need know terms perhaps architecture context unavailable. We can phrase roles without asserting meanings overly. Need 400-600 words count around 500.
+
+Need structure exact. ADR title. Status likely Proposed. Context problem. Decision. Consequences positives negatives neutral. Alternatives. Word count ensure 400-600. Let's draft ~520.
+
+Need explain validity lifecycle:
+- Cell validity anchored by fleet-clock.
+- Valid: witness observations meet freshness and conservation.
+- Grace: no current witness? expiration deadline? Allows delayed events/bookkeeping; maybe state remains usable but flagged, not authoritative?
+- Expired terminal/read-only, excluded from active fleet, no backdating resurrection.
+- New validity only through replacement cell and witness chain.
+- Bookkeeper records transitions and source evidence.
+- ternary states valid/grace/expired rather than boolean, avoids ambiguity.
+- JEV? likely "joint event validity"? JEPA/JEV. Need use naturally but could state distinction: JEPA prediction cannot create witness; JEV maybe "joint event..." Unknown. Avoid expansion. "The JEPA path may anticipate but not establish..." "JEV evidence" maybe accepted event. What is JEV? In cellular-first perhaps "Joint Event Verification" or "Journal Event"? User specifically requests terms. We can use exact names without expansion: "JEPA-derived prediction" and "JEV record". Grounded.
+
+Could mention conservation means no state proliferation or extension without evidence. Bookkeeper single authority. Fleet-clock timestamps.
+
+ADR only. Need perhaps 400-600 exact. Let's count rough 540.</think>
+
+# ADR-0015: Temporal validity lifecycle for cells
+
+## 1. Status
+
+Proposed
+
+## 2. Context
+
+Cells require a time-bounded validity state because observations, witnesses, and fleet-clock timestamps arrive from distributed sources. A binary “valid/invalid” flag cannot distinguish a cell with current corroboration from one awaiting delayed evidence, and it gives operators no explicit warning that a cell is approaching loss of authority.
+
+The substrate must also preserve conservation. Validity must not be extended merely because a cell is still present, referenced by another cell, or predicted to remain useful. A separate bookkeeper must record lifecycle transitions without allowing each cell to maintain competing notions of freshness.
+
+We need one lifecycle that supports delayed witness delivery, prevents expired cells from silently returning to the active fleet, and remains legible to JEPA and JEV processing. The lifecycle must also work across fleet-clock skew and partial fleet partitions.
+
+## 3. Decision
+
+Every cell has exactly one temporal validity state: **Valid**, **Grace**, or **Expired**. The state is maintained by the bookkeeper and derived from the cell’s witness evidence and fleet-clock timestamps.
+
+A cell is **Valid** while it has a current witness and its validity interval has not elapsed. It enters **Grace** when the expected witness becomes stale but the cell remains within a bounded grace window. Grace is an explicit degraded state: the cell may be read for continuity and reconciliation, but it cannot originate new fleet work, satisfy witness requirements, or be treated as current merely because a prediction supports it. A JEPA prediction may nominate a cell for investigation, but it cannot establish validity or extend grace.
+
+A cell becomes **Expired** when its grace window ends or its final validity bound is crossed. Expiry is terminal for that cell instance. It cannot be revived by a late witness, a JEV backfill, or a fleet-clock correction. Restoration requires creating a replacement cell with a new validity bound and an explicit witness chain.
+
+The bookkeeper records the prior state, new state, fleet-clock time, reason, and evidence reference for every transition. Transitions are monotonic from Valid to Grace to Expired; only administrative correction of the recorded transition is permitted, never retroactive extension of the cell’s validity. Late evidence may be retained as history and may support creation of a replacement, but it does not alter the expired cell.
+
+## 4. Consequences
+
+**Positive:** The ternary state makes stale-but-recoverable cells distinguishable from terminal cells. The bookkeeper provides one auditable authority. Conservation is preserved by preventing repeated extensions and unauthorized resurrection. Deterministic transition rules improve behavior during partition and fleet-clock skew.
+
+**Negative:** Grace introduces an additional state that readers and policies must handle. Terminal expiry may discard useful historical context, requiring operators to inspect evidence or create replacement cells. Maintaining witness deadlines and transition records increases bookkeeper workload.
+
+**Neutral:** The lifecycle does not define how witness confidence is scored, how long a grace window should be, or how JEPA and JEV implementations exchange evidence. Those remain configurable policies rather than lifecycle semantics.
+
+## 5. Alternatives Considered
+
+- **Boolean valid/invalid:** Simpler, but collapses grace into either authority or failure and obscures delayed-evidence handling.
+- **Boolean plus separate stale flag:** Rejected because it permits contradictory combinations and distributed interpretation.
+- **Perpetual validity with manual revocation:** Rejected because it violates conservation and allows stale cells to persist indefinitely.
+- **Rolling extensions on any activity:** Rejected because activity is not witness evidence and could create an unbounded validity chain.
+- **Revive expired cells:** Rejected because it weakens auditability; replacement cells preserve history without rewriting time.
