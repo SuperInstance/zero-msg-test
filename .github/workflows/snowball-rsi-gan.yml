@@ -91,6 +91,13 @@ jobs:
           # Fail loudly here rather than 20 steps later with ModuleNotFoundError.
           test -s bots/snowball-scout/snowball_writer.py
 
+      - name: Clear stale pieces from the checkout
+        run: |
+          # The checkout carries previously published pieces. Wipe the output
+          # dir so the publish step can never pick up a stale file.
+          rm -rf out/prose/snowball-inspired
+          mkdir -p out/prose/snowball-inspired
+
       - name: Run snowball writer (RSI GAN competition)
         env:
           OIDC_TOKEN: ${{ env.OIDC_TOKEN }}
