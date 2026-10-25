@@ -28,6 +28,14 @@ on:
         description: 'Repo to publish the piece into (owner/name)'
         required: false
         default: 'SuperInstance/AI-Writings'
+      source_ref:
+        description: 'Branch of the target repo holding bots/ + the canon prose (master)'
+        required: false
+        default: 'master'
+      publish_ref:
+        description: 'Branch of the target repo the piece is committed to (main)'
+        required: false
+        default: 'main'
 
 permissions:
   id-token: write
@@ -59,21 +67,29 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TARGET_REPO: ${{ inputs.target_repo }}
+          SOURCE_REF: ${{ inputs.source_ref }}
         run: |
           set -euo pipefail
           mkdir -p canon bots/snowball-scout bots/substrate-bus
           # The canon is what the writer reads for inspiration seeds; take the
           # prose tree so pick_seed() sees the same material it would locally.
-          curl -sL "https://api.github.com/repos/${TARGET_REPO}/tarball/main" -o /tmp/aiw.tar.gz
+          #
+          # SOURCE_REF matters: `main` of AI-Writings no longer carries bots/ or
+          # the canon (it was repurposed for civ-orchestrator output), so a
+          # hardcoded main fetch silently copies nothing and the run dies on
+          # `import snowball_writer`. The bots/ + canon live on `master`.
+          curl -sL "https://api.github.com/repos/${TARGET_REPO}/tarball/${SOURCE_REF}" -o /tmp/aiw.tar.gz
           mkdir -p /tmp/aiw && tar -xzf /tmp/aiw.tar.gz -C /tmp/aiw
           SRC=$(find /tmp/aiw -maxdepth 1 -mindepth 1 -type d | head -1)
           cp -r "$SRC/prose" canon/prose 2>/dev/null || true
-          cp "$SRC/bots/snowball-scout/snowball_writer.py" bots/snowball-scout/ || true
-          cp "$SRC/bots/substrate-bus/substrate_bus.py" bots/substrate-bus/ || true
-          cp "$SRC/bots/substrate-bus/topics.json" bots/substrate-bus/ || true
-          cp "$SRC/bots/substrate-bus/substrate-witness.jsonl" bots/substrate-bus/ || true
+          cp "$SRC/bots/snowball-scout/snowball_writer.py" bots/snowball-scout/
+          cp "$SRC/bots/substrate-bus/substrate_bus.py" bots/substrate-bus/
+          cp "$SRC/bots/substrate-bus/topics.json" bots/substrate-bus/
+          cp "$SRC/bots/substrate-bus/substrate-witness.jsonl" bots/substrate-bus/
           echo "canon pieces: $(ls canon/prose/*.md 2>/dev/null | wc -l)"
           ls -la bots/snowball-scout/ bots/substrate-bus/
+          # Fail loudly here rather than 20 steps later with ModuleNotFoundError.
+          test -s bots/snowball-scout/snowball_writer.py
 
       - name: Run snowball writer (RSI GAN competition)
         env:
@@ -128,3 +144,65 @@ jobs:
           git add -A out/ || true
           git diff --cached --quiet || git commit -m "snowball: RSI GAN run (witness + piece)"
           git push || true
+
+      - name: Publish the piece into the target repo
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_REPO: ${{ inputs.target_repo }}
+          PUBLISH_REF: ${{ inputs.publish_ref }}
+        run: |
+          set -euo pipefail
+          # The piece lives in out/prose/snowball-inspired/ and belongs in
+          # <target>/prose/snowball-inspired/ on the publish branch. Commit it
+          # through the GitHub API (no cross-repo clone, no credential juggling).
+          PIECE=$(ls -1 out/prose/snowball-inspired/*.md | head -1)
+          test -n "$PIECE"
+          NAME=$(basename "$PIECE")
+          echo "publishing $NAME -> $TARGET_REPO@$PUBLISH_REF"
+          python3 - "$PIECE" "$NAME" <<'PY'
+          import base64, json, os, sys, urllib.request
+          path, name = sys.argv[1], sys.argv[2]
+          repo = os.environ["TARGET_REPO"]
+          ref = os.environ["PUBLISH_REF"]
+          token = os.environ["GH_TOKEN"]
+          api = "https://api.github.com/repos/%s/contents/prose/snowball-inspired/%s" % (repo, name)
+
+          def req(url, method="GET", body=None):
+              data = json.dumps(body).encode() if body is not None else None
+              r = urllib.request.Request(
+                  url, data=data, method=method,
+                  headers={"Authorization": "Bearer " + token,
+                           "Accept": "application/vnd.github+json",
+                           "Content-Type": "application/json"})
+              with urllib.request.urlopen(r, timeout=60) as resp:
+                  return json.loads(resp.read().decode())
+
+          content = base64.b64encode(open(path, "rb").read()).decode()
+          body = {"message": "snowball: RSI GAN inspired piece (%s)" % name,
+                  "content": content, "branch": ref}
+          try:
+              res = req(api, "PUT", body)
+              print("published:", res["content"]["html_url"])
+          except urllib.error.HTTPError as e:
+              if e.code != 422:
+                  raise
+              # File already exists (same second, same seed) -> overwrite it.
+              sha = json.loads(e.read().decode())["errors"][0]["resource"]
+              cur = req(api + "?ref=" + ref)
+              body["sha"] = cur["sha"]
+              body["message"] = "snowball: RSI GAN inspired piece (%s, updated)" % name
+              res = req(api, "PUT", body)
+              print("updated:", res["content"]["html_url"])
+          PY
+
+      - name: Verify the published piece
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_REPO: ${{ inputs.target_repo }}
+          PUBLISH_REF: ${{ inputs.publish_ref }}
+        run: |
+          set -euo pipefail
+          NAME=$(ls -1 out/prose/snowball-inspired/*.md | head -1 | xargs basename)
+          curl -sS -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/${TARGET_REPO}/contents/prose/snowball-inspired/${NAME}?ref=${PUBLISH_REF}" \
+            | python3 -c "import json,sys; d=json.load(sys.stdin); assert 'content' in d, d; print('VERIFIED', d['path'], d['size'], 'bytes')"
