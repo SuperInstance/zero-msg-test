@@ -1,0 +1,40 @@
+name: probe-vault-gh2
+
+on:
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: write
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get OIDC token for vault
+        run: |
+          OIDC_TOKEN=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=vault" | python3 -c "import sys,json; print(json.load(sys.stdin).get('value',''))")
+          echo "OIDC_TOKEN=${OIDC_TOKEN}" >> $GITHUB_ENV
+      - name: Probe
+        env:
+          OIDC_TOKEN: ${{ env.OIDC_TOKEN }}
+          VAULT_URL: https://superinstance-vault.casey-digennaro.workers.dev
+        run: |
+          python3 - <<'PY' || true
+          import json, os, urllib.request, urllib.error
+          ACTS = ["comment_issue","update_issue","create_pull_request","add_comment","update_pull_request",
+                  "create_release","upload_release_asset","create_gist","fork_repo","star_repo",
+                  "set_secret","create_secret","update_variable","create_variable","set_variable",
+                  "create_repo","update_repo","get_ref","create_tree_commit","commit","push",
+                  "git_push","commit_and_push","publish","publish_file","create_git_commit"]
+          for a in ACTS:
+              body = {"oidc_token": os.environ["OIDC_TOKEN"], "service": "github",
+                      "action": a, "params": {}}
+              req = urllib.request.Request(os.environ["VAULT_URL"]+"/proxy", data=json.dumps(body).encode(),
+                  headers={"Content-Type":"application/json","User-Agent":"purplepincher-zero/1.0"}, method="POST")
+              try:
+                  with urllib.request.urlopen(req, timeout=45) as r:
+                      print("ACT", a, "-> OK", r.read().decode()[:200])
+              except urllib.error.HTTPError as e:
+                  print("ACT", a, "-> HTTP", e.code, e.read().decode(errors="replace")[:150])
+              except Exception as e:
+                  print("ACT", a, "-> ERR", type(e).__name__, str(e)[:100])
+          PY
