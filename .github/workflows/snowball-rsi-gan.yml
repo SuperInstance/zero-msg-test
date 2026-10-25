@@ -147,7 +147,7 @@ jobs:
 
       - name: Publish the piece into the target repo
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.FLEET_PUBLISH_TOKEN }}
           TARGET_REPO: ${{ inputs.target_repo }}
           PUBLISH_REF: ${{ inputs.publish_ref }}
         run: |
@@ -155,7 +155,10 @@ jobs:
           # The piece lives in out/prose/snowball-inspired/ and belongs in
           # <target>/prose/snowball-inspired/ on the publish branch. Commit it
           # through the GitHub API (no cross-repo clone, no credential juggling).
-          PIECE=$(ls -1 out/prose/snowball-inspired/*.md | head -1)
+          # `ls -1` sorts lexically, so an older dated piece (20261024-...) can
+          # sort before the one just written (20261025-...). Take the newest by
+          # mtime, not by name.
+          PIECE=$(ls -1t out/prose/snowball-inspired/*.md | head -1)
           test -n "$PIECE"
           NAME=$(basename "$PIECE")
           echo "publishing $NAME -> $TARGET_REPO@$PUBLISH_REF"
@@ -187,7 +190,8 @@ jobs:
               if e.code != 422:
                   raise
               # File already exists (same second, same seed) -> overwrite it.
-              sha = json.loads(e.read().decode())["errors"][0]["resource"]
+              # e.read() is one-shot: read the body ONCE and parse from it.
+              err = json.loads(e.read().decode())
               cur = req(api + "?ref=" + ref)
               body["sha"] = cur["sha"]
               body["message"] = "snowball: RSI GAN inspired piece (%s, updated)" % name
@@ -197,12 +201,12 @@ jobs:
 
       - name: Verify the published piece
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.FLEET_PUBLISH_TOKEN }}
           TARGET_REPO: ${{ inputs.target_repo }}
           PUBLISH_REF: ${{ inputs.publish_ref }}
         run: |
           set -euo pipefail
-          NAME=$(ls -1 out/prose/snowball-inspired/*.md | head -1 | xargs basename)
+          NAME=$(ls -1t out/prose/snowball-inspired/*.md | head -1 | xargs basename)
           curl -sS -H "Authorization: Bearer $GH_TOKEN" \
             "https://api.github.com/repos/${TARGET_REPO}/contents/prose/snowball-inspired/${NAME}?ref=${PUBLISH_REF}" \
             | python3 -c "import json,sys; d=json.load(sys.stdin); assert 'content' in d, d; print('VERIFIED', d['path'], d['size'], 'bytes')"
