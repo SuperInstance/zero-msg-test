@@ -31,15 +31,21 @@ jobs:
         run: |
           python3 - <<'PY' || true
           import json, os, urllib.request, urllib.error
-          body = {"oidc_token": os.environ["OIDC_TOKEN"], "service": "github",
-                  "action": os.environ["ACT"], "params": json.loads(os.environ.get("PARAMS") or "{}")}
-          req = urllib.request.Request(os.environ["VAULT_URL"]+"/proxy", data=json.dumps(body).encode(),
-              headers={"Content-Type":"application/json","User-Agent":"purplepincher-zero/1.0"}, method="POST")
-          try:
-              with urllib.request.urlopen(req, timeout=90) as r:
-                  print("OK", r.status, r.read().decode()[:1500])
-          except urllib.error.HTTPError as e:
-              print("HTTP", e.code, e.read().decode(errors="replace")[:1500])
-          except Exception as e:
-              print("ERR", type(e).__name__, str(e)[:200])
+          ACTS = ["get_repo","list_files","get_file","create_file","update_file","commit_file",
+                  "put_file","create_or_update_file","push_files","create_branch","list_branches",
+                  "create_pull_request","create_issue","list_issues","write_file","delete_file",
+                  "create_commit","get_contents","get_tree","list_commits","create_blob","create_tree",
+                  "create_ref","update_ref","merge_pull_request","search_code"]
+          for a in ACTS:
+              body = {"oidc_token": os.environ["OIDC_TOKEN"], "service": "github",
+                      "action": a, "params": json.loads(os.environ.get("PARAMS") or "{}")}
+              req = urllib.request.Request(os.environ["VAULT_URL"]+"/proxy", data=json.dumps(body).encode(),
+                  headers={"Content-Type":"application/json","User-Agent":"purplepincher-zero/1.0"}, method="POST")
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as r:
+                      print("ACT", a, "-> OK", r.status, r.read().decode()[:200])
+              except urllib.error.HTTPError as e:
+                  print("ACT", a, "-> HTTP", e.code, e.read().decode(errors="replace")[:200])
+              except Exception as e:
+                  print("ACT", a, "-> ERR", type(e).__name__, str(e)[:120])
           PY
